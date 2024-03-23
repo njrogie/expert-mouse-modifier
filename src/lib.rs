@@ -1,8 +1,12 @@
 use log::info;
-use std::{fmt::Display, fs};
-use evdev::{uinput::VirtualDeviceBuilder, AttributeSetRef, Device, RelativeAxisType};
+use tokio::sync::mpsc::{self, Sender, Receiver};
+use std::fs;
+use evdev::{uinput::{VirtualDevice, VirtualDeviceBuilder}, InputEvent, Device};
+use deviceinfo::DeviceInfo;
 
-pub fn init() -> Result<(), Box<dyn std::error::Error>> {
+mod deviceinfo;
+
+pub async fn init() -> Result<(), Box<dyn std::error::Error>> {
     // find the devices linked to kensington
     let device = find_devices()?[0].clone();
     let mut device = Device::open(device)?;
@@ -14,7 +18,7 @@ pub fn init() -> Result<(), Box<dyn std::error::Error>> {
     // grab the device and begin event transcription
     match device.grab() {
         Ok(_) => {
-            manage_events(device);
+            manage_events(device).await;
             return Ok(())
         },
         Err(e) => {
@@ -22,53 +26,6 @@ pub fn init() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 }
-
-struct DeviceInfo<'a> {
-    axes: &'a AttributeSetRef<RelativeAxisType>,
-    mouse_buttons: &'a AttributeSetRef<evdev::Key>
-}
-
-impl<'a> DeviceInfo<'a> {
-    fn new(device: &Device) -> DeviceInfo {
-        let axes = device
-            .supported_relative_axes()
-            .unwrap();
-
-        let mouse_buttons = device
-            .supported_keys()
-            .unwrap();
-        
-        DeviceInfo{
-            axes: axes,
-            mouse_buttons: mouse_buttons
-        }
-    }
-}
-
-impl Display for DeviceInfo<'_>{
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut out = String::from("\nKENSINGTON DEVICE INFO\n");
-        out += "---------\n";
-        out += "MOUSE AXES\n";
-        let iter = self.axes.iter();
-        for axis in iter {
-            out += "\t";
-            out += format!("{:?}",axis).as_str();
-            out += "\n";
-        }
-
-        out += "---------\n";
-        out += "MOUSE BUTTONS\n";
-        let iter = self.mouse_buttons.iter();
-        for button in iter {
-            out += "\t";
-            out += format!("{:?}",button).as_str();
-            out += "\n";
-        }
-        write!(f, "{}", out)
-    }
-}
-
 
 fn find_devices() -> Result<Vec<String>,Box<dyn std::error::Error>> {
     // find the devices linked to kensington
@@ -92,24 +49,45 @@ fn find_devices() -> Result<Vec<String>,Box<dyn std::error::Error>> {
     Ok(kensington_devices)
 }
 
-fn manage_events(mut device: Device) -> Result<(),std::io::Error>{
-    info!("Creating virtual device...");
-    let info = DeviceInfo::new(&device);
+fn build_virtual_device(phys_device: &Device) -> Result<VirtualDevice, std::io::Error> {
+    let info = DeviceInfo::new(&phys_device);
     let virt_dev = VirtualDeviceBuilder::new()?;
-    let mut virt_dev = virt_dev.name("Remapped Trackball Mouse")
+    let virt_dev = virt_dev.name("Remapped Trackball Mouse")
         .with_keys(info.mouse_buttons)?
         .with_relative_axes(info.axes)?
         .build()?;
 
-    info!("Begin event read...");
+    Ok(virt_dev)
+}
+
+async fn manage_events(device: Device) {
+    info!("Creating virtual device...");
+
+    let (tx, rx) = mpsc::channel(100);
+
+    let virt_dev = build_virtual_device(&device).unwrap();
+
+    // spawn a worker thread that receives 'processed' events
+    tokio::spawn(async move {
+        write_virt_device(virt_dev, rx).await;
+    });
+
+    read_device(device, tx).await;
+}
+
+async fn read_device(mut physical: Device, sender: Sender<Vec<InputEvent>>) {
     loop {
-        let events = device.fetch_events()?;
-        info!("------------");
-        let mut events_slice = vec![];
+        let events = physical.fetch_events().unwrap();
+        let mut input_vec:Vec<InputEvent> = vec![];
         for event in events {
-            info!("{:?}, {}", event.code(), event.value());
-            events_slice.push(event);
-        }
-        virt_dev.emit(&events_slice)?;
+            input_vec.push(event);
+        }    
+        let _ = sender.send(input_vec).await;
+    }
+}
+async fn write_virt_device(mut virt: VirtualDevice, mut receiver: Receiver<Vec<InputEvent>>) {
+    loop {
+        let event_vec = receiver.recv().await.unwrap();
+        let _ = virt.emit(&event_vec);
     }
 }

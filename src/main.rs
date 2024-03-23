@@ -1,9 +1,11 @@
 use simplelog::{SimpleLogger, LevelFilter, Config};
 use expert_mouse_modifier;
+use tokio;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = SimpleLogger::init(LevelFilter::Info, Config::default());
-    expert_mouse_modifier::init();
+    let _ = expert_mouse_modifier::init().await;
 
     Ok(())
 }
