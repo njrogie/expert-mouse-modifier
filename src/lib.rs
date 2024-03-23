@@ -97,7 +97,6 @@ fn manage_events(mut device: Device) -> Result<(),std::io::Error>{
     let info = DeviceInfo::new(&device);
     let virt_dev = VirtualDeviceBuilder::new()?;
     let mut virt_dev = virt_dev.name("Remapped Trackball Mouse")
-        .input_id(device.input_id())
         .with_keys(info.mouse_buttons)?
         .with_relative_axes(info.axes)?
         .build()?;
