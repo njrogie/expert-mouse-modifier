@@ -1,11 +1,12 @@
 use log::info;
 use tokio::sync::mpsc::{self, Sender, Receiver};
 use std::fs;
-use evdev::{uinput::{VirtualDevice, VirtualDeviceBuilder}, InputEvent, Device};
+use evdev::{uinput::{VirtualDevice, VirtualDeviceBuilder}, Device, InputEvent};
 use deviceinfo::DeviceInfo;
 
 mod deviceinfo;
 
+// Create and run the middleman routine for a Kensington device
 pub async fn init() -> Result<(), Box<dyn std::error::Error>> {
     // find the devices linked to kensington
     let device = find_devices()?[0].clone();
@@ -27,10 +28,12 @@ pub async fn init() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
+// Filter devices for the ones we want ("kensington" + "event-mouse" in input devices)
 fn find_devices() -> Result<Vec<String>,Box<dyn std::error::Error>> {
-    // find the devices linked to kensington
     let devices = fs::read_dir("/dev/input/by-id")?;
     let mut kensington_devices: Vec<String> = vec![];
+
+    // Select the kensington mouse device
     for dev in devices{
         let file_name = dev?.path().into_os_string().into_string().unwrap();
         let is_kensington = file_name.to_ascii_lowercase().contains("kensington");
@@ -49,6 +52,21 @@ fn find_devices() -> Result<Vec<String>,Box<dyn std::error::Error>> {
     Ok(kensington_devices)
 }
 
+// Create the virtual device and begin processing events.
+async fn manage_events(device: Device) {
+    let (tx, rx) = mpsc::channel(100);
+    let virt_dev = build_virtual_device(&device).unwrap();
+
+    // spawn a worker thread that receives 'processed' events
+    tokio::spawn(async move {
+        write_virt_device(virt_dev, rx).await;
+    });
+
+    // run the read on the main thread
+    read_device(device, tx).await;
+}
+
+// Build the virtual device that's going to receive processed events.
 fn build_virtual_device(phys_device: &Device) -> Result<VirtualDevice, std::io::Error> {
     let info = DeviceInfo::new(&phys_device);
     let virt_dev = VirtualDeviceBuilder::new()?;
@@ -60,34 +78,17 @@ fn build_virtual_device(phys_device: &Device) -> Result<VirtualDevice, std::io::
     Ok(virt_dev)
 }
 
-async fn manage_events(device: Device) {
-    info!("Creating virtual device...");
-
-    let (tx, rx) = mpsc::channel(100);
-
-    let virt_dev = build_virtual_device(&device).unwrap();
-
-    // spawn a worker thread that receives 'processed' events
-    tokio::spawn(async move {
-        write_virt_device(virt_dev, rx).await;
-    });
-
-    read_device(device, tx).await;
-}
-
-async fn read_device(mut physical: Device, sender: Sender<Vec<InputEvent>>) {
+async fn read_device(mut physical: Device, sender: Sender<InputEvent>) {
     loop {
-        let events = physical.fetch_events().unwrap();
-        let mut input_vec:Vec<InputEvent> = vec![];
-        for event in events {
-            input_vec.push(event);
-        }    
-        let _ = sender.send(input_vec).await;
+        for event in physical.fetch_events().unwrap() {
+            let _ = sender.send(event).await;
+        }
     }
 }
-async fn write_virt_device(mut virt: VirtualDevice, mut receiver: Receiver<Vec<InputEvent>>) {
+
+async fn write_virt_device(mut virt: VirtualDevice, mut receiver: Receiver<InputEvent>) {
     loop {
-        let event_vec = receiver.recv().await.unwrap();
+        let event_vec = [receiver.recv().await.unwrap()];
         let _ = virt.emit(&event_vec);
     }
 }
