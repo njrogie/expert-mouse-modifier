@@ -1,8 +1,12 @@
 use log::info;
 use tokio::sync::mpsc::{self, Sender, Receiver};
-use std::fs;
+use std::{env, fs};
 use evdev::{uinput::{VirtualDevice, VirtualDeviceBuilder}, Device, InputEvent};
+
+mod eventprocessor;
+
 use deviceinfo::DeviceInfo;
+use eventprocessor::CmdMap;
 
 mod deviceinfo;
 
@@ -11,6 +15,12 @@ pub async fn init() -> Result<(), Box<dyn std::error::Error>> {
     // find the devices linked to kensington
     let device = find_devices()?[0].clone();
     let mut device = Device::open(device)?;
+    
+    let args: Vec<String> = env::args().collect();
+    let cmd_map = match args.get(1) {
+        Some(arg) => CmdMap::new(arg.clone()),
+        None => CmdMap::default(), 
+    };
     
     info!("Grabbing device {}", device.name().unwrap());
     let info = DeviceInfo::new(&device);    
@@ -88,7 +98,9 @@ async fn read_device(mut physical: Device, sender: Sender<InputEvent>) {
 
 async fn write_virt_device(mut virt: VirtualDevice, mut receiver: Receiver<InputEvent>) {
     loop {
-        let event_vec = [receiver.recv().await.unwrap()];
-        let _ = virt.emit(&event_vec);
+        let event = receiver.recv().await.unwrap();
+
+        info!("EVENT: {:?} ({}) - {}", evdev::Key(event.code()), event.code(), event.value());
+        let _ = virt.emit(&[event]);
     }
 }
