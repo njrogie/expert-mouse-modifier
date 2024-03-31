@@ -3,12 +3,11 @@ use tokio::sync::mpsc::{self, Sender, Receiver};
 use std::{env, fs};
 use evdev::{uinput::{VirtualDevice, VirtualDeviceBuilder}, Device, InputEvent};
 
+mod deviceinfo;
 mod eventprocessor;
 
 use deviceinfo::DeviceInfo;
 use eventprocessor::CmdMap;
-
-mod deviceinfo;
 
 // Create and run the middleman routine for a Kensington device
 pub async fn init() -> Result<(), Box<dyn std::error::Error>> {
@@ -29,7 +28,7 @@ pub async fn init() -> Result<(), Box<dyn std::error::Error>> {
     // grab the device and begin event transcription
     match device.grab() {
         Ok(_) => {
-            manage_events(device).await;
+            manage_events(cmd_map, device).await;
             return Ok(())
         },
         Err(e) => {
@@ -48,7 +47,6 @@ fn find_devices() -> Result<Vec<String>,Box<dyn std::error::Error>> {
         let file_name = dev?.path().into_os_string().into_string().unwrap();
         let is_kensington = file_name.to_ascii_lowercase().contains("kensington");
         let contains_event = file_name.to_ascii_lowercase().contains("event-mouse"); // we want regular event, not mouse
-
         if is_kensington && contains_event {
             // add that device to the list of devices found.
             kensington_devices.push(String::from(file_name));
@@ -63,13 +61,13 @@ fn find_devices() -> Result<Vec<String>,Box<dyn std::error::Error>> {
 }
 
 // Create the virtual device and begin processing events.
-async fn manage_events(device: Device) {
+async fn manage_events(map: CmdMap, device: Device) {
     let (tx, rx) = mpsc::channel(100);
     let virt_dev = build_virtual_device(&device).unwrap();
 
     // spawn a worker thread that receives 'processed' events
     tokio::spawn(async move {
-        write_virt_device(virt_dev, rx).await;
+        write_virt_device(map, virt_dev, rx).await;
     });
 
     // run the read on the main thread
@@ -78,11 +76,13 @@ async fn manage_events(device: Device) {
 
 // Build the virtual device that's going to receive processed events.
 fn build_virtual_device(phys_device: &Device) -> Result<VirtualDevice, std::io::Error> {
-    let info = DeviceInfo::new(&phys_device);
+    let mut info = DeviceInfo::new(&phys_device);
+    // add mouse buttons as necessary
+    info.mouse_buttons.insert(evdev::Key::BTN_EXTRA);
     let virt_dev = VirtualDeviceBuilder::new()?;
     let virt_dev = virt_dev.name("Remapped Trackball Mouse")
-        .with_keys(info.mouse_buttons)?
-        .with_relative_axes(info.axes)?
+        .with_keys(&*info.mouse_buttons)?
+        .with_relative_axes(&*info.axes)?
         .build()?;
 
     Ok(virt_dev)
@@ -96,11 +96,30 @@ async fn read_device(mut physical: Device, sender: Sender<InputEvent>) {
     }
 }
 
-async fn write_virt_device(mut virt: VirtualDevice, mut receiver: Receiver<InputEvent>) {
+async fn write_virt_device(map: CmdMap, mut virt: VirtualDevice, mut receiver: Receiver<InputEvent>) {
     loop {
         let event = receiver.recv().await.unwrap();
-
-        info!("EVENT: {:?} ({}) - {}", evdev::Key(event.code()), event.code(), event.value());
-        let _ = virt.emit(&[event]);
+        if ![evdev::EventType::RELATIVE, evdev::EventType::SYNCHRONIZATION].contains(
+                &event.event_type()) {
+            // translate the event correctly
+            match map.translate_command(event) {
+                Ok(mapped_event) => {
+                    info!("EVENT: {:?} mapped to {:?} ({} to {})", 
+                        evdev::Key(event.code()), 
+                        evdev::Key(mapped_event.code()),
+                        event.code(), 
+                        mapped_event.code()
+                    );
+                    let _ = virt.emit(&[mapped_event]);
+                },
+                Err(_) => {
+                    info!("EVENT: {:?} ({}) - {}", evdev::Key(event.code()), event.code(), event.value());
+                    println!("No mapped event for {:?}", evdev::Key(event.code()));
+                    let _ = virt.emit(&[event]);
+                }
+            }
+        } else {
+            let _ = virt.emit(&[event]);
+        }
     }
 }
