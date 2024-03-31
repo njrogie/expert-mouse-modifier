@@ -1,13 +1,13 @@
-use std::{collections::HashMap, fs, io};
+use std::{collections::HashMap, path::PathBuf, fs, io};
 use evdev::InputEvent;
 use log::{info,error};
 use serde::Deserialize;
 use serde_with::serde_as;
 
-
 #[serde_as]
 #[derive(Deserialize, Debug)]
 pub struct CmdMap {
+    name_filter: String,
     base_code: i32,
     #[serde_as(as = "Vec<(_,_)>")]
     button_map: HashMap<u16,u16>
@@ -15,7 +15,7 @@ pub struct CmdMap {
 
 impl CmdMap {
     // create a new CmdMap from the required location, OR default map.
-    pub fn new(loc: String) -> CmdMap {
+    pub fn new(loc: PathBuf) -> CmdMap {
         info!("Loading stored map from location.");
         match CmdMap::load_stored_map(loc) {
             Ok(map) => return map,
@@ -28,9 +28,14 @@ impl CmdMap {
 
     pub fn default() -> CmdMap {
         CmdMap {
+            name_filter: String::from(""),
             base_code: 0,
             button_map: HashMap::new()
         }
+    }
+
+    pub fn get_name_filter(&self) -> String {
+        self.name_filter.clone()
     }
 
     // translate one InputEvent to another. If no mapped event, throw err
@@ -88,7 +93,7 @@ impl CmdMap {
         }
     }
 
-    fn load_stored_map(location: String) -> Result<CmdMap, std::io::Error> {
+    fn load_stored_map(location: PathBuf) -> Result<CmdMap, std::io::Error> {
         /*
             it turns out that the only thing we need to record in the file
             is the key code. other parts of the click that are sent are simply
@@ -125,7 +130,7 @@ mod tests {
         assert!(map.translate_command(test_cmd).unwrap().event_type() == evdev::EventType::KEY);
     }
 
-    fn get_test_file() -> String {
-        String::from(concat!(env!("CARGO_MANIFEST_DIR"), "/test_cmds.json"))
+    fn get_test_file() -> PathBuf {
+        String::from(concat!(env!("CARGO_MANIFEST_DIR"), "/test_cmds.json")).into()
     }
 }

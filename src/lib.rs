@@ -1,25 +1,33 @@
 use log::info;
 use tokio::sync::mpsc::{self, Sender, Receiver};
-use std::{env, fs};
+use std::fs;
 use evdev::{uinput::{VirtualDevice, VirtualDeviceBuilder}, Device, InputEvent};
 
 mod deviceinfo;
 mod eventprocessor;
+mod localdata;
 
 use deviceinfo::DeviceInfo;
 use eventprocessor::CmdMap;
+use localdata::DataStorage;
 
-// Create and run the middleman routine for a Kensington device
+// Create and run the middleman routine for a mouse device
 pub async fn init() -> Result<(), Box<dyn std::error::Error>> {
-    // find the devices linked to kensington
-    let device = find_devices()?[0].clone();
-    let mut device = Device::open(device)?;
-    
-    let args: Vec<String> = env::args().collect();
-    let cmd_map = match args.get(1) {
-        Some(arg) => CmdMap::new(arg.clone()),
-        None => CmdMap::default(), 
-    };
+    // find and load the command map registry 
+    let home_dir = Some(std::env::var("HOME_DIR")?.into());
+    let data_storage = DataStorage::new(home_dir);
+
+    // find the devices linked to the loaded map
+    let cmd_map = CmdMap::new({
+        if data_storage.has_files() {
+            data_storage.get_file(0)?
+        } else {
+            std::env::current_dir()?
+        }
+    });
+
+    let device = find_devices(&cmd_map)?[0].clone();
+    let mut device = Device::open(device)?;   
     
     info!("Grabbing device {}", device.name().unwrap());
     let info = DeviceInfo::new(&device);    
@@ -37,17 +45,17 @@ pub async fn init() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-// Filter devices for the ones we want ("kensington" + "event-mouse" in input devices)
-fn find_devices() -> Result<Vec<String>,Box<dyn std::error::Error>> {
+// Filter devices for the ones we want ("name filter" + "event-mouse" in input devices)
+fn find_devices(cmd_map: &CmdMap) -> Result<Vec<String>,Box<dyn std::error::Error>> {
     let devices = fs::read_dir("/dev/input/by-id")?;
     let mut kensington_devices: Vec<String> = vec![];
 
-    // Select the kensington mouse device
-    for dev in devices{
+    // Select the desired mouse device
+    for dev in devices {
         let file_name = dev?.path().into_os_string().into_string().unwrap();
-        let is_kensington = file_name.to_ascii_lowercase().contains("kensington");
+        let device_type = file_name.to_ascii_lowercase().contains(cmd_map.get_name_filter().as_str());
         let contains_event = file_name.to_ascii_lowercase().contains("event-mouse"); // we want regular event, not mouse
-        if is_kensington && contains_event {
+        if device_type && contains_event {
             // add that device to the list of devices found.
             kensington_devices.push(String::from(file_name));
         } 
@@ -88,6 +96,7 @@ fn build_virtual_device(phys_device: &Device) -> Result<VirtualDevice, std::io::
     Ok(virt_dev)
 }
 
+// core loop for reading device events
 async fn read_device(mut physical: Device, sender: Sender<InputEvent>) {
     loop {
         for event in physical.fetch_events().unwrap() {
@@ -96,6 +105,7 @@ async fn read_device(mut physical: Device, sender: Sender<InputEvent>) {
     }
 }
 
+// core loop for writing processed device events
 async fn write_virt_device(map: CmdMap, mut virt: VirtualDevice, mut receiver: Receiver<InputEvent>) {
     loop {
         let event = receiver.recv().await.unwrap();
