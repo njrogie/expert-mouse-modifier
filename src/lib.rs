@@ -1,30 +1,19 @@
 use log::info;
 use tokio::sync::mpsc::{self, Sender, Receiver};
-use std::fs;
+use std::{fs, path::PathBuf};
 use evdev::{uinput::{VirtualDevice, VirtualDeviceBuilder}, Device, InputEvent};
 
 mod deviceinfo;
 mod eventprocessor;
-mod localdata;
 
 use deviceinfo::DeviceInfo;
 use eventprocessor::CmdMap;
-use localdata::DataStorage;
 
 // Create and run the middleman routine for a mouse device
-pub async fn init() -> Result<(), Box<dyn std::error::Error>> {
-    // find and load the command map registry 
-    let home_dir = Some(std::env::var("HOME_DIR")?.into());
-    let data_storage = DataStorage::new(home_dir);
+pub async fn init(path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
 
     // find the devices linked to the loaded map
-    let cmd_map = CmdMap::new({
-        if data_storage.has_files() {
-            data_storage.get_file(0)?
-        } else {
-            std::env::current_dir()?
-        }
-    });
+    let cmd_map = CmdMap::new(path);
 
     let device = find_devices(&cmd_map)?[0].clone();
     let mut device = Device::open(device)?;   
@@ -48,8 +37,9 @@ pub async fn init() -> Result<(), Box<dyn std::error::Error>> {
 // Filter devices for the ones we want ("name filter" + "event-mouse" in input devices)
 fn find_devices(cmd_map: &CmdMap) -> Result<Vec<String>,Box<dyn std::error::Error>> {
     let devices = fs::read_dir("/dev/input/by-id")?;
-    let mut kensington_devices: Vec<String> = vec![];
+    let mut mouse_devices: Vec<String> = vec![];
 
+    info!("Searching for devices matching {}", cmd_map.get_name_filter());
     // Select the desired mouse device
     for dev in devices {
         let file_name = dev?.path().into_os_string().into_string().unwrap();
@@ -57,15 +47,19 @@ fn find_devices(cmd_map: &CmdMap) -> Result<Vec<String>,Box<dyn std::error::Erro
         let contains_event = file_name.to_ascii_lowercase().contains("event-mouse"); // we want regular event, not mouse
         if device_type && contains_event {
             // add that device to the list of devices found.
-            kensington_devices.push(String::from(file_name));
+            mouse_devices.push(String::from(file_name));
         } 
     }
 
-    info!("Found {} Kensington Devices.", kensington_devices.len());
-    for device in &kensington_devices {
+    info!("Found {} Devices.", mouse_devices.len());
+    if mouse_devices.len() == 0 {
+        let ret:Box<std::io::Error> = Box::new(std::io::Error::new(std::io::ErrorKind::NotFound, "Could not find any devices matching the device id.")) ;
+        return Err(ret)
+    }
+    for device in &mouse_devices {
         info!("\t{}", device);
     }
-    Ok(kensington_devices)
+    Ok(mouse_devices)
 }
 
 // Create the virtual device and begin processing events.

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
-use std::io;
 use log::info;
+
 pub struct DataStorage {
     data_files: Vec<PathBuf>
 }
@@ -14,25 +14,11 @@ impl DataStorage {
             },
             Err(_) => {}
         }
-
         DataStorage{ data_files: read_data_files }
     }
 
-    pub fn get_file(&self, idx: usize) -> Result<PathBuf, std::io::Error> {
-        if !self.has_files() || idx > self.get_num_files() - 1 {
-            dbg!("{:?}", &self.data_files);
-            return Err(io::Error::new(io::ErrorKind::NotFound, format!("{} is outside of the number of files", idx)));
-        } else {
-            return Ok(self.data_files[idx].clone());
-        }
-    }
-
-    pub fn get_num_files(&self) -> usize {
-        self.data_files.len()
-    }
-
-    pub fn has_files(&self) -> bool {
-        self.get_num_files() != 0
+    pub fn get_list_files(&self) -> Vec<PathBuf> {
+        return self.data_files.clone();
     }
     
 }
@@ -42,7 +28,6 @@ fn get_data_files(path: Option<PathBuf>) -> Result<Vec<PathBuf>, std::io::Error>
     info!("Data Dir: {}", data_dir.display());
     // create data_dir if not exists
     if !data_dir.exists() {
-
         //create the data_dir
         std::fs::create_dir(&data_dir)?;
     }
